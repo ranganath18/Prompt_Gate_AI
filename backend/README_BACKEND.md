@@ -1,0 +1,229 @@
+# Prompt Gate AI — Backend
+
+Prompt Gate AI is a FastAPI service that classifies customer-support messages with a Groq-hosted language model and accepts the result only when it conforms to a Pydantic response schema.
+
+> **Scope:** This service classifies messages. It does not connect to an order-management system, retrieve account data, or fetch the current time.
+
+## Features
+
+- Classifies messages into `greeting`, `order_tracking`, `payment_issue`, `current_time`, `general_question`, or `unknown`.
+- Produces a structured result containing intent, risk profile, priority, action requirement, and a short summary.
+- Uses Instructor with Pydantic to request and validate structured LLM output.
+- Rejects invalid input and reports schema-validation or model-request failures through HTTP responses.
+- Estimates input tokens locally with `tiktoken`, using a rough fallback if tokenization is unavailable.
+- Exposes a health endpoint and automatically generated API documentation.
+
+## Technology stack
+
+- Python
+- FastAPI and Uvicorn
+- Groq Python SDK
+- Instructor
+- Pydantic v2
+- `python-dotenv`
+- `tiktoken`
+- `pytest` and `httpx` are included in the requirements for testing
+
+## Expected project layout
+
+The imports and frontend API calls expect a layout similar to:
+
+```text
+project-root/
+├── backend/
+│   ├── .env                 # local secret file; do not commit
+│   ├── .env.example        # safe template (if you choose this filename)
+│   ├── requirements.txt
+│   └── app/
+│       ├── __init__.py
+│       ├── main.py
+│       ├── config.py
+│       ├── schemas/
+│       │   ├── __init__.py
+│       │   └── ingestion.py
+│       ├── services/
+│       │   ├── __init__.py
+│       │   └── llm_service.py
+│       └── utils/
+│           ├── __init__.py
+│           └── token_counter.py
+└── frontend/
+    ├── index.html
+    ├── style.css
+    └── script.js
+```
+
+The uploaded files may currently have download-generated names such as `main(20261013-023650).py`. Rename/place them according to the module paths above before running the commands. The frontend HTML references `style.css` and `script.js`; keep those filenames aligned.
+
+## 1. Prerequisites
+
+- Python 3.10 or newer is recommended.
+- A Groq API key.
+- Network access to the Groq API.
+
+## 2. Install dependencies
+
+From the `backend` directory, create and activate a virtual environment.
+
+### Windows PowerShell
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If PowerShell blocks activation, you can run the virtual environment's Python directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+## 3. Configure environment variables
+
+Create `backend/.env` from your local environment template. Use the following format:
+
+```dotenv
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=openai/gpt-oss-120b
+```
+
+`GROQ_MODEL` is optional because the backend has a default model value in `app/config.py`. Set it explicitly if you want to control which Groq-supported model is used. Confirm that the selected model is available to your Groq account.
+
+**Security:** never commit `.env`, paste real keys into README files, or expose keys in screenshots. If a real API key has been shared or uploaded unintentionally, revoke/rotate it in the provider dashboard and update the local environment. Keep only placeholders in `.env.example`.
+
+## 4. Start the API
+
+Run this from the `backend` directory:
+
+```powershell
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+The API will be available at:
+
+- Health check: `http://127.0.0.1:8000/health`
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+
+Use `--reload` for local development only, not as a production deployment setting.
+
+## API reference
+
+### `GET /health`
+
+Checks whether the FastAPI process is running.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "message": "Prompt Gate AI API is running"
+}
+```
+
+This checks the API process; it does not guarantee that the Groq service or API key is working.
+
+### `POST /api/analyze`
+
+Analyzes a customer message.
+
+Request body:
+
+```json
+{
+  "message": "My payment was deducted twice. Please help urgently."
+}
+```
+
+The `message` field must contain non-whitespace text and must not exceed 5,000 characters. Extra request fields are forbidden by the request schema.
+
+Example successful response shape:
+
+```json
+{
+  "intent": "payment_issue",
+  "risk_profile": "medium",
+  "priority": "high",
+  "requires_action": true,
+  "summary": "The customer reports a duplicate payment deduction and requests urgent help.",
+  "token_metadata": {
+    "estimated_input_tokens": 18,
+    "note": "Estimated locally; may differ from provider token counts."
+  }
+}
+```
+
+The values above illustrate the response shape; actual classifications are generated by the model and may differ for a particular message.
+
+#### Response fields
+
+| Field | Allowed values / meaning |
+|---|---|
+| `intent` | `greeting`, `order_tracking`, `payment_issue`, `current_time`, `general_question`, `unknown` |
+| `risk_profile` | `low`, `medium`, `high`, `unknown` |
+| `priority` | `low`, `medium`, `high` |
+| `requires_action` | Boolean indicating whether another tool/service or follow-up would be needed to complete the request |
+| `summary` | Non-empty summary, up to 500 characters |
+| `token_metadata.estimated_input_tokens` | Local input-token estimate, not a billing record |
+| `token_metadata.note` | Explains the estimate's limitations |
+
+### Error behavior
+
+| HTTP status | Meaning |
+|---|---|
+| `422 Unprocessable Entity` | Request validation failed, for example an empty/whitespace message or a message over the allowed length |
+| `502 Bad Gateway` | LLM request failed, or model output did not pass schema validation |
+| `200 OK` | A result matching the response schema was returned |
+
+The exact error body depends on whether FastAPI input validation, Pydantic output validation, or the upstream model request failed. Do not treat an HTTP 200 classification as proof that a requested business action was executed.
+
+## How the backend works
+
+1. FastAPI validates the request against `IngestionRequest`.
+2. The service constructs a system prompt that defines allowed intents, risk guidance, and untrusted-input handling.
+3. Instructor calls the Groq chat completion API with `IngestionResult` as the expected response model.
+4. Pydantic validates the structured result and restricts categorical fields to the declared literal values.
+5. The endpoint adds a local estimate of input tokens and returns the validated result.
+6. Validation or upstream failures are returned as HTTP errors for the frontend to display.
+
+## Test with curl
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/analyze" \
+  -H "Content-Type: application/json" \
+  -d "{\"message\":\"Where is my order?\"}"
+```
+
+PowerShell alternative:
+
+```powershell
+$body = @{ message = "Where is my order?" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/analyze" -ContentType "application/json" -Body $body
+```
+
+## Troubleshooting
+
+- **Missing `GROQ_API_KEY`:** ensure `backend/.env` exists and contains a valid key. Restart Uvicorn after changing environment variables.
+- **Model unavailable or access denied:** check `GROQ_MODEL` against the models available to your Groq account.
+- **502 model request failure:** check the key, network connection, provider availability, model name, and provider limits.
+- **422 response:** send JSON with a non-empty `message` string no longer than 5,000 characters.
+- **Import error for `app.*`:** start Uvicorn from the `backend` directory and ensure the package directories contain `__init__.py` files.
+- **Frontend cannot connect:** start the backend on port 8000 and check the frontend's `API_URL` in `script.js`.
+
+## Production considerations
+
+This is a development-oriented example, not a complete production security boundary. Before deployment:
+
+- Replace permissive CORS (`allow_origins=["*"]`) with the exact frontend origins.
+- Add authentication, rate limiting, request logging with sensitive-data redaction, and operational monitoring as appropriate.
+- Avoid returning detailed validation data to untrusted clients unless it is intentionally exposed.
+- Add automated tests for request validation, schema failures, upstream failures, and normal classifications.
+- Configure timeouts, concurrency limits, and deployment workers based on the target environment.
+- Review privacy and retention requirements before storing customer messages.
+
+## License
+
+Add the license and attribution terms appropriate for your repository.
