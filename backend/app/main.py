@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, ValidationError
 from app.schemas.ingestion import IngestionRequest, IngestionResult
 from app.services.llm_service import analyze_message
 from app.utils.token_counter import estimate_tokens
+from app.schemas.ingestion import IngestionRequest, IngestionResult, RespondResult
+from app.services.llm_service import analyze_message, generate_response
 
 app = FastAPI(
     title="Enterprise Structured Ingestion Firewall",
@@ -49,6 +51,21 @@ def analyze(request: IngestionRequest):
         ) from exc
     except Exception as exc:
         # Keep the response simple; avoid exposing secrets or internal details.
+        raise HTTPException(
+            status_code=502,
+            detail="LLM request failed. Check the API key, model name, network, and provider limits.",
+        ) from exc
+@app.post("/api/respond", response_model=RespondResult)
+def respond(request: IngestionRequest):
+    message = request.message.strip()
+    try:
+        analysis = analyze_message(message)
+        analysis.token_metadata.estimated_input_tokens = estimate_tokens(message)
+        markdown = generate_response(message, analysis)
+        return RespondResult(**analysis.model_dump(), response_markdown=markdown)
+    except ValidationError as exc:
+        raise HTTPException(status_code=502, detail="The model response did not pass validation.") from exc
+    except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail="LLM request failed. Check the API key, model name, network, and provider limits.",

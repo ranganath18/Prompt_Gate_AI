@@ -3,3 +3,6 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
+venv/
+node_modules/
+dist/

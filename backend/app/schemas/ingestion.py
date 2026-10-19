@@ -48,3 +48,6 @@ class IngestionResult(BaseModel):
     requires_action: bool
     summary: str = Field(min_length=1, max_length=500)
     token_metadata: TokenMetadata = Field(default_factory=TokenMetadata)
+
+class RespondResult(IngestionResult):
+    response_markdown: str = Field(min_length=1)
