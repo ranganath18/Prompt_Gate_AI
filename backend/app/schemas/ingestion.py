@@ -18,6 +18,13 @@ Priority = Literal["low", "medium", "high"]
 class IngestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Optional conversation session identifier (UUID).",
+    )
+
     message: str = Field(
         min_length=1,
         max_length=5000,
@@ -49,5 +56,7 @@ class IngestionResult(BaseModel):
     summary: str = Field(min_length=1, max_length=500)
     token_metadata: TokenMetadata = Field(default_factory=TokenMetadata)
 
+
 class RespondResult(IngestionResult):
+    session_id: str = Field(min_length=1)
     response_markdown: str = Field(min_length=1)
